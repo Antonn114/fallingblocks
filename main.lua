@@ -11,12 +11,11 @@ end
 
 
 function love.load()
-    math.randomseed(os.time())
     game.Reset()
 
     love.window.setMode(config.screen_width, config.screen_height)
     love.window.setTitle("Falling Blocks")
-    love.graphics.setLineWidth(2)
+    love.graphics.setLineWidth(config.line_width)
 end
 
 function love.update(dt)

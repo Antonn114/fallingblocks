@@ -1,11 +1,5 @@
 local config = require("config")
-
-
---- TODO
--- grace period fix check collision bottom
--- ceiling check collision with outside
--- grace period move + rotate limit
-
+local sound = require("sound")
 
 ---@class game
 game = {}
@@ -48,10 +42,10 @@ game.brick_shapes = {
         [4] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 2, 1 } }
     },
     [game.BRICK_T] = {
-        [1] = { { 0, 1 }, { 1, 0 }, { 1, 1 }, { 1, 2 } },
-        [2] = { { 0, 1 }, { 1, 1 }, { 1, 2 }, { 2, 1 } },
-        [3] = { { 1, 0 }, { 1, 1 }, { 1, 2 }, { 2, 1 } },
-        [4] = { { 0, 1 }, { 1, 0 }, { 1, 1 }, { 2, 1 } },
+        [1] = { { 0, 1 }, { 1, 0 }, { 1, 1 }, { 1, 2 } }, -- up
+        [2] = { { 0, 1 }, { 1, 1 }, { 1, 2 }, { 2, 1 } }, -- right
+        [3] = { { 1, 0 }, { 1, 1 }, { 1, 2 }, { 2, 1 } }, -- down
+        [4] = { { 0, 1 }, { 1, 0 }, { 1, 1 }, { 2, 1 } }, -- left
     },
     [game.BRICK_L] = {
         [1] = { { 0, 2 }, { 1, 0 }, { 1, 1 }, { 1, 2 } },
@@ -118,11 +112,12 @@ game.score = 0
 game.total_score = 0
 game.last_cleared = 0
 
-game.is_landing = false
 game.game_stage = game.MAIN_MENU
 game.phase = game.PHASE_NOTHING
 game.stop_clock = 0
 game.last_update = 0
+game.lock_move_rotate_count = 0
+game.lock_move_rotate_limit = 15
 
 game.hold_block = nil
 game.can_hold = false
@@ -130,20 +125,9 @@ game.can_hold = false
 game.hold_interval = 0
 game.hold_delay = 0
 
-game.counter_bag = {
-    [game.BRICK_I] = 0,
-    [game.BRICK_Z] = 0,
-    [game.BRICK_S] = 0,
-    [game.BRICK_T] = 0,
-    [game.BRICK_L] = 0,
-    [game.BRICK_J] = 0,
-    [game.BRICK_O] = 0
-}
-game.current_bag = 0
-game.current_bag_numbers = 0
-
-game.piece_queue = { 0, 0, 0, 0, 0, 0, 0 }
+game.piece_queue = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 game.piece_index = 1
+game.is_locking = false
 
 game.falling_block = {
     x = 1,
@@ -153,46 +137,8 @@ game.falling_block = {
     orientation = 1
 }
 
-function game.RandomBag()
-    local choose = math.random(1, 7)
-    while (game.counter_bag[choose] ~= game.current_bag) do
-        choose = math.random(1, 7)
-    end
-    game.counter_bag[choose] = game.counter_bag[choose] + 1
-    game.current_bag_numbers = game.current_bag_numbers + 1
-    if (game.current_bag_numbers >= 7) then
-        game.current_bag_numbers = 0
-        game.current_bag = game.current_bag + 1
-    end
-    return choose
-end
-
-function game.NextPieceFrom(index)
-    local new_index = index + 1
-    while new_index > 7 do
-        new_index = new_index - 7
-    end
-    if game.piece_queue[new_index] == 0 then
-        game.piece_queue[new_index] = game.RandomBag()
-    end
-    return game.piece_queue[new_index]
-end
-
-function game.SoftReset()
-    game.can_hold = true
-    game.phase = game.PHASE_NOTHING
-    game.is_landing = false
-    game.stop_clock = 0
-end
-
-function game.Reset()
-    game.SoftReset()
-    game.level = 1
-    game.hold_block = nil
-    game.piece_index = 0
-    game.current_bag_numbers = 0
-    game.current_bag = 0
-    game.counter_bag = {
+function game.GenerateRandom(idx)
+    local counter = {
         [game.BRICK_I] = 0,
         [game.BRICK_Z] = 0,
         [game.BRICK_S] = 0,
@@ -202,16 +148,67 @@ function game.Reset()
         [game.BRICK_O] = 0
     }
     for i = 1, 7, 1 do
-        game.piece_queue[i] = game.RandomBag()
+        while idx > #game.piece_queue do
+            idx = idx - #game.piece_queue
+        end
+        local choose = math.random(1, 7)
+        while counter[choose] > 0 do
+            choose = math.random(1, 7)
+        end
+        counter[choose] = counter[choose] + 1
+        game.piece_queue[idx] = choose
+        idx = idx + 1
     end
+end
+
+function game.NextPieceFrom(index)
+    local new_index = index + 1
+    while new_index > #game.piece_queue do
+        new_index = new_index - #game.piece_queue
+    end
+    if game.piece_queue[new_index] == 0 then
+        game.GenerateRandom(new_index)
+    end
+    return game.piece_queue[new_index]
+end
+
+function game.SoftReset()
+    game.can_hold = true
     game.phase = game.PHASE_NOTHING
-    game.is_landing = false
+    game.stop_clock = 0
+    game.is_locking = false
+    game.lock_move_rotate_count = 0
+    ui.animation_time = 0
+    ui.animation_repeat = 0
+    for i = 1, config.grid_height, 1 do
+        if game.CheckRowClear(i) then
+            ui.animation = ui.ANIMATION_FLASHING
+        end
+    end
+end
+
+function game.Reset()
+    math.randomseed(os.time())
     for i = 1, config.grid_height, 1 do
         game.grid[i] = {}
         for j = 1, config.grid_width, 1 do
             game.grid[i][j] = config.NOTHING_SQUARE
         end
     end
+    game.SoftReset()
+    game.level = 1
+    game.hold_block = nil
+    game.piece_index = 0
+    game.falling_block = {
+        x = 1,
+        y = 1,
+        brick_shape = 1,
+        color = config.NOTHING_SQUARE,
+        orientation = 1
+    }
+    ui.animation = ui.ANIMATION_NONE
+    game.GenerateRandom(1)
+    game.phase = game.PHASE_NOTHING
 end
 
 function game.TimePerRow()
@@ -227,27 +224,34 @@ function game.MoveAllAboveDownToRow(row)
 end
 
 function game.CheckRowClear(row)
-    local cleared = 0
     local is_clear = true
     for j = 1, config.grid_width, 1 do
         if game.grid[row][j] == config.NOTHING_SQUARE then
             is_clear = false
         end
     end
-    if is_clear then
+    return is_clear
+end
+
+function game.ClearRow(row)
+    local cleared = 0
+    if game.CheckRowClear(row) then
         for j = 1, config.grid_width, 1 do
             game.grid[row][j] = 0
         end
         game.MoveAllAboveDownToRow(row)
-        cleared = cleared + game.CheckRowClear(row) + 1
+        cleared = cleared + game.ClearRow(row) + 1
     end
     return cleared
+end
+
+function game.CheckTSpin()
 end
 
 function game.CheckRowClears()
     local cleared = 0
     for i = config.grid_height, 1, -1 do
-        cleared = cleared + game.CheckRowClear(i)
+        cleared = cleared + game.ClearRow(i)
     end
     if cleared >= 4 and game.last_cleared >= 4 then
         game.score = game.score + 12
@@ -280,7 +284,7 @@ function game.CreateBrick(brick_index, x, y, brick_color, brick_orientation)
 end
 
 function game.OutsideGrid(x, y)
-    return x > config.grid_height or x < 1 or y > config.grid_width or y < 1
+    return x > config.grid_height or x < config.grid_blind_height - 1 or y > config.grid_width or y < 1
 end
 
 function game.RedrawFalling(changing_function)
@@ -296,6 +300,16 @@ function game.CheckCollisionHere()
     local has_collision = false
     for k, square in pairs(game.brick_shapes[game.falling_block.brick_shape][game.falling_block.orientation]) do
         if (game.grid[game.falling_block.x + square[1]][game.falling_block.y + square[2]] ~= config.NOTHING_SQUARE) then
+            has_collision = true
+        end
+    end
+    return has_collision
+end
+
+function game.CheckCollisionOutside()
+    local has_collision = false
+    for k, square in pairs(game.brick_shapes[game.falling_block.brick_shape][game.falling_block.orientation]) do
+        if (game.OutsideGrid(game.falling_block.x + square[1], game.falling_block.y + square[2])) then
             has_collision = true
         end
     end
@@ -408,6 +422,7 @@ function love.keypressed(key, scancode, isrepeat)
             while (not game.CheckCollisionBottom()) do
                 game.falling_block.x = game.falling_block.x + 1
             end
+            love.audio.play(sound.fall)
         end)
 
         game.SoftReset()
@@ -424,6 +439,7 @@ function love.keypressed(key, scancode, isrepeat)
         end
         game.SoftReset()
         game.can_hold = false
+        love.audio.play(sound.hold)
         game.CreateBrick(old_brick, game.falling_block.x, game.falling_block.y, config.NOTHING_SQUARE,
             game.falling_block.orientation)
     end
@@ -434,6 +450,10 @@ function love.keypressed(key, scancode, isrepeat)
             if (not game.CheckCollisionLeft()) then
                 game.falling_block.y = game.falling_block.y - 1
                 game.stop_clock = 0
+                sound.PlayMove()
+                if (game.is_locking) then
+                    game.lock_move_rotate_count = game.lock_move_rotate_count + 1
+                end
             end
         end)
     end
@@ -444,6 +464,10 @@ function love.keypressed(key, scancode, isrepeat)
             if (not game.CheckCollisionRight()) then
                 game.falling_block.y = game.falling_block.y + 1
                 game.stop_clock = 0
+                sound.PlayMove()
+                if (game.is_locking) then
+                    game.lock_move_rotate_count = game.lock_move_rotate_count + 1
+                end
             end
         end)
     end
@@ -461,40 +485,58 @@ function love.keypressed(key, scancode, isrepeat)
             else
                 game.falling_block.x = game.falling_block.x + good_wall_kick[1]
                 game.falling_block.y = game.falling_block.y + good_wall_kick[2]
+                love.audio.play(sound.rotate)
                 game.stop_clock = 0
+                if (game.is_locking) then
+                    game.lock_move_rotate_count = game.lock_move_rotate_count + 1
+                end
             end
         end)
     end
 end
 
+local played_clear = false
+
 function game.update(dt)
     if (game.phase == game.PHASE_NOTHING) then
+        if (ui.animation ~= ui.ANIMATION_NONE) then
+            ui.animation_time = ui.animation_time + dt
+            if (not played_clear) then
+                love.audio.play(sound.clear)
+            end
+            played_clear = true
+            return
+        end
         game.CheckRowClears()
+        played_clear = false
         if (game.CheckWinLevel()) then
             game.level = game.level + 1
+            love.audio.play(sound.rankup)
             game.total_score = game.total_score + game.score
             game.score = 0
         end
+        game.piece_queue[game.piece_index] = 0
         game.piece_index = game.piece_index + 1
-        while (game.piece_index > 7) do
-            game.piece_index = game.piece_index - 7
+        while (game.piece_index > #game.piece_queue) do
+            game.piece_index = game.piece_index - #game.piece_queue
         end
         game.falling_block.brick_shape = game.piece_queue[game.piece_index]
 
-        game.falling_block.x = 5
+        game.falling_block.x = 3
         if game.falling_block.brick_shape == game.BRICK_I then
-            game.falling_block.x = 3
+            game.falling_block.x = 2
         end
         game.falling_block.orientation = 1
         game.falling_block.y = math.floor((config.grid_width - game.brick_width[game.falling_block.brick_shape]) / 2.0 +
             1)
-        while (game.falling_block.x >= 2 and game.CheckCollisionHere()) do
+        game.falling_block.color = game.brick_color[game.falling_block.brick_shape]
+        while (game.CheckCollisionHere()) do
             game.falling_block.x = game.falling_block.x - 1
         end
-        if (game.falling_block.x < 2) then
+        if (game.CheckCollisionOutside()) then
             game.game_stage = game.GAME_OVER
+            love.audio.play(sound.game_over)
         else
-            game.falling_block.color = game.brick_color[game.falling_block.brick_shape]
             game.CreateBrick(game.falling_block.brick_shape, game.falling_block.x, game.falling_block.y,
                 game.falling_block.color,
                 game.falling_block.orientation)
@@ -503,16 +545,22 @@ function game.update(dt)
     end
 
     if (game.phase == game.PHASE_DROP) then
+        local moved = false
         while (game.last_update >= game.TimePerRow()) do
             game.RedrawFalling(function()
-                if (game.CheckCollisionBottom()) then
-                    game.is_landing = true
-                else
+                if (not game.CheckCollisionBottom()) then
                     game.falling_block.x = game.falling_block.x + 1
-                    game.stop_clock = 0
+
+                    game.lock_move_rotate_count = 0
+                    moved = true
+                else
+                    game.is_locking = true
                 end
             end)
             game.last_update = game.last_update - game.TimePerRow()
+        end
+        if (moved and love.keyboard.isDown("down")) then
+            sound.PlayMove()
         end
 
         game.hold_delay = game.hold_delay + dt * 15
@@ -522,8 +570,12 @@ function game.update(dt)
             if (game.hold_delay >= 3) then
                 game.RedrawFalling(function()
                     if (not game.CheckCollisionLeft()) then
+                        sound.PlayMove()
                         game.falling_block.y = game.falling_block.y - 1
                         game.stop_clock = 0
+                        if (game.is_locking) then
+                            game.lock_move_rotate_count = game.lock_move_rotate_count + 1
+                        end
                     end
                 end)
             end
@@ -533,25 +585,39 @@ function game.update(dt)
             if (game.hold_delay >= 3) then
                 game.RedrawFalling(function()
                     if (not game.CheckCollisionRight()) then
+                        sound.PlayMove()
                         game.falling_block.y = game.falling_block.y + 1
                         game.stop_clock = 0
+                        if (game.is_locking) then
+                            game.lock_move_rotate_count = game.lock_move_rotate_count + 1
+                        end
                     end
                 end)
             end
             game.hold_interval = game.hold_interval - 1
         end
-    end
-    if (love.keyboard.isDown("down")) then
-        game.last_update = game.last_update + dt * 15
-    else
-        game.last_update = game.last_update + dt
-    end
-    if (game.is_landing) then
-        game.stop_clock = game.stop_clock + dt
-    end
 
-    if (game.stop_clock >= 0.5) then
-        game.SoftReset()
+        if (love.keyboard.isDown("down")) then
+            game.last_update = game.last_update + dt * 15
+        else
+            game.last_update = game.last_update + dt
+        end
+        game.RedrawFalling(function()
+            if (game.CheckCollisionBottom() and game.is_locking) then
+                game.stop_clock = game.stop_clock + dt
+            else
+                game.stop_clock = 0
+            end
+        end)
+
+        if (game.stop_clock >= 0.5 or (game.lock_move_rotate_count > game.lock_move_rotate_limit and game.CheckCollisionBottom())) then
+            game.RedrawFalling(function()
+                while (not game.CheckCollisionBottom()) do
+                    game.falling_block.x = game.falling_block.x + 1
+                end
+            end)
+            game.SoftReset()
+        end
     end
 end
 

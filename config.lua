@@ -17,12 +17,14 @@ config.COLOR_SQUARE = {
     [config.RED_SQUARE] = { 1, 0, 0 },
     [config.GREEN_SQUARE] = { 0, 1, 0 },
     [config.BLUE_SQUARE] = { 0, 0, 1 },
-    [config.PURPLE_SQUARE] = { 1, 0, 1 },
+    [config.PURPLE_SQUARE] = { 0.5, 0, 0.5 },
     [config.YELLOW_SQUARE] = { 1, 1, 0 },
     [config.CYAN_SQUARE] = { 0, 1, 1 },
     [config.ORANGE_SQUARE] = { 1, 0.5, 0 },
     [config.NOTHING_SQUARE] = { 0, 0, 0 }
 }
+
+config.line_width = 2
 
 config.grid_blind_height = 4
 config.grid_height = 24
@@ -38,5 +40,7 @@ config.play_area_margin = 40
 config.button_margin = 10
 
 config.square_grid_sidelength = (config.screen_height - config.play_area_margin * 2) / config.grid_height
+config.square_panel_sidelength = config.square_grid_sidelength / 3 * 2
+
 
 return config
